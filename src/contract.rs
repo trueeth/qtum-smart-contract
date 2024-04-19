@@ -2,11 +2,11 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    coin, from_json, to_json_binary, Addr, Binary, Decimal, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128 
+    coin, from_json, to_json_binary, Addr, Binary, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128, WasmMsg 
 };
 
 use cw2::set_contract_version;
-use cw20::Cw20ReceiveMsg ;
+use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg} ;
 use cw20_base::allowances::{
     execute_burn_from, execute_decrease_allowance, execute_increase_allowance, execute_send_from,
     execute_transfer_from, query_allowance,
@@ -278,6 +278,14 @@ pub fn unlock(
 
     // unbond them
     let res = Response::new()
+        .add_messages(vec![CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: stake_info.staking_token_address.to_string(),
+            msg: to_json_binary(&Cw20ExecuteMsg::Transfer {
+                recipient: info.sender.to_string(),
+                amount,
+            })?,
+            funds: vec![],
+        })])
         .add_attribute("action", "unlock")
         .add_attribute("to", info.sender)
         .add_attribute("unlocked", unlock)
