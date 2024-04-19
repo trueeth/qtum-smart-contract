@@ -10,6 +10,13 @@ pub enum ContractError {
     Unauthorized {},
 
 
+    #[error("Invalid Index")]
+    InvalidIndex {},
+
+    #[error("Invalid Derivate Token")]
+    InvalidDerivateToken {},
+
+
     #[error("Invalid Lock Type")]
     InvalidLockType {},
 
@@ -22,6 +29,9 @@ pub enum ContractError {
 
     #[error("No {denom} tokens sent")]
     EmptyBalance { denom: String },
+
+    #[error("Insufficient lock token amount")]
+    InsufficientLockBalance {},
 
 
     #[error("Cannot set to own account")]

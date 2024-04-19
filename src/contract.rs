@@ -1,11 +1,12 @@
+
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    coin, from_binary, to_binary, Addr, Binary, Decimal, Deps, DepsMut, Env, MessageInfo, Response, StdError, StdResult, Uint128 
+    coin, from_json, to_json_binary, Addr, Binary, Decimal, Deps, DepsMut, Env, MessageInfo, Order, Response, StdError, StdResult, Uint128 
 };
 
 use cw2::set_contract_version;
-use cw20::{Cw20QueryMsg, BalanceResponse, Cw20ReceiveMsg};
+use cw20::Cw20ReceiveMsg ;
 use cw20_base::allowances::{
     execute_burn_from, execute_decrease_allowance, execute_increase_allowance, execute_send_from,
     execute_transfer_from, query_allowance,
@@ -14,17 +15,16 @@ use cw20_base::contract::{
     execute_burn, execute_mint, execute_send, execute_transfer, query_balance, query_token_info,
 };
 use cw20_base::state::{MinterData, TokenInfo, TOKEN_INFO};
-use cw_utils::Duration;
 
 use crate::error::ContractError;
-use crate::msg::{Cw20HookMsg, ExecuteMsg, InstantiateMsg, InvestmentResponse, LockType, QueryMsg};
-use crate::state::{ LockPrd, LockTax, StakingInfo, Supply,   STAKING_INFO, TOTAL_SUPPLY};
+use crate::msg::{Cw20HookMsg, ExecuteMsg, InstantiateMsg, InvestmentResponse, LockType, QueryMsg, UserStakingInfoResponse};
+use crate::state::{  LockPrd, LockTax, StakingInfo, Supply, UserStakingInfo, STAKING_INFO, TOTAL_SUPPLY, USER_STAKING};
 
 
 const FALLBACK_RATIO: Decimal = Decimal::one();
 
 // version info for migration info
-const CONTRACT_NAME: &str = "crates.io:cw20-staking";
+const CONTRACT_NAME: &str = "crates.io:xqtum";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -54,10 +54,10 @@ pub fn instantiate(
     let staking_info = StakingInfo {
         owner: info.sender,
         stake_denom: msg.stake_denom,
-        staking_token_address: deps.api.addr_canonicalize(&msg.staking_token_address)?,
+        staking_token_address: deps.api.addr_validate(&msg.staking_token_address)?,
         period: LockPrd {
-            long: Duration::Time(msg.long_period),
-            short: Duration::Time(msg.short_period)
+            long: msg.long_period,
+            short: msg.short_period
         },
         tax: LockTax {
             long: Decimal::percent(msg.long_tax),
@@ -84,8 +84,8 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::Receive(msg) => receive_cw20(deps, env, info, msg),       
-        ExecuteMsg::UnLock { amount } => unlock(deps, env, info, amount),
 
+        ExecuteMsg::UnLock { idx, amount } => unlock(deps, env, info,  idx, amount ),
         // these all come from cw20-base to implement the cw20 standard
         ExecuteMsg::Transfer { recipient, amount } => {
             Ok(execute_transfer(deps, env, info, recipient, amount)?)
@@ -131,41 +131,6 @@ pub fn execute(
     }
 }
 
-// get_locked returns the total amount of qtum locked on this contract
-// it ensures they are all the same denom
-fn get_locked(deps: Deps,  contract: &Addr) -> Result<Uint128, ContractError> {
-
-    let staking_token_address = STAKING_INFO.load(deps.storage)?.staking_token_address;
-    
-    let balance: BalanceResponse = deps.querier.query_wasm_smart(
-        staking_token_address.to_string(),
-        &Cw20QueryMsg::Balance {
-            address: contract.to_string(),
-        },
-    )?;
-
-    let locked = balance.balance;
-   
-    if locked.is_zero() {
-        return Ok(Uint128::zero());
-    };
-
-    return  Ok(locked);
-
-}
-
-
-fn assert_locks(supply: &Supply, locked: Uint128) -> Result<(), ContractError> {
-    if supply.locked != locked {
-        Err(ContractError::LockedMismatch {
-            stored: supply.locked,
-            queried: locked,
-        })
-    } else {
-        Ok(())
-    }
-}
-
 
 pub fn receive_cw20(
     deps: DepsMut,
@@ -175,22 +140,30 @@ pub fn receive_cw20(
 ) -> Result<Response, ContractError> {
     let stake_info = STAKING_INFO.load(deps.storage)?;
 
-    match from_binary(&cw20_msg.msg) {
-        Ok(Cw20HookMsg::Lock { lock_type}) => {
+    match from_json(&cw20_msg.msg) {
+        Ok(Cw20HookMsg::Lock { idx, lock_type}) => {
             // only staking token contract can execute this message
-            if stake_info.staking_token_address != deps.api.addr_canonicalize(info.sender.as_str())? {
+            if stake_info.staking_token_address != deps.api.addr_validate(info.sender.as_str())? {
                 return Err(ContractError::InvalidStakingToken {});
             }
 
             let cw20_sender = deps.api.addr_validate(&cw20_msg.sender)?;
-            lock(deps, env, cw20_sender, cw20_msg.amount, lock_type)
+            lock(deps, env, cw20_sender, idx,   cw20_msg.amount, lock_type)
         }
+
         Err(_) => Err(ContractError::InvalidLockType {  }),
     }
 }
 
 
-pub fn lock(deps: DepsMut, env: Env, sender: Addr, lock_amount: Uint128, lock_type: LockType) -> Result<Response, ContractError> {
+pub fn lock(
+    deps: DepsMut, 
+    env: Env, 
+    sender: Addr, 
+    idx: String,  
+    lock_amount: Uint128, 
+    lock_type: LockType
+) -> Result<Response, ContractError> {
 
     let stake_info = STAKING_INFO.load(deps.storage)?;
 
@@ -208,8 +181,9 @@ pub fn lock(deps: DepsMut, env: Env, sender: Addr, lock_amount: Uint128, lock_ty
 
     let to_mint = lock_amount - tax;
 
-    supply.locked = supply.locked + lock_amount;
+    supply.locked  += lock_amount;
     supply.issued += to_mint;
+    supply.fees += tax;
 
     TOTAL_SUPPLY.save(deps.storage, &supply)?;
 
@@ -218,7 +192,24 @@ pub fn lock(deps: DepsMut, env: Env, sender: Addr, lock_amount: Uint128, lock_ty
         sender: env.contract.address.clone(),
         funds: vec![],
     };
+    let user_staking = UserStakingInfo {
+        idx: idx.clone(),
+        owner: sender.clone(),
+        amount: lock_amount,
+        date: env.block.time.seconds(),
+        period: match lock_type {
+            LockType::Long {} => stake_info.period.long,
+            LockType::Short{} => stake_info.period.short
+        }
+    };
+
+    USER_STAKING.update(deps.storage, &idx, |old| match old {
+        Some(_) => Err(ContractError::InvalidIndex{}),
+        None => Ok(user_staking)
+    })?;
+
     execute_mint(deps, env, sub_info, sender.to_string(), to_mint)?;
+
 
     // bond them to the validator
     let res = Response::new()
@@ -235,20 +226,27 @@ pub fn unlock(
     mut deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    amount: Uint128,
+    idx: String,
+    amount: Uint128
 ) -> Result<Response, ContractError> {
     let stake_info = STAKING_INFO.load(deps.storage)?;
+    let user_staking_info = USER_STAKING.load(deps.storage, &idx)?;
    
+    if info.sender != user_staking_info.owner {
+       return Err(ContractError::Unauthorized {})
+    } else if amount > user_staking_info.amount {
+        return Err(ContractError::InsufficientLockBalance{});
+    }
     // calculate tax and remainer to unlock
-    let tax = amount * stake_info.penalty;
+    let tax : Uint128 = if  env.block.time.seconds() < user_staking_info.date + user_staking_info.period {
+         user_staking_info.amount * stake_info.penalty
+    } else {
+         Uint128::zero()
+    };
 
     // burn from the original caller
     execute_burn(deps.branch(), env.clone(), info.clone(), amount)?;
   
-
-    // re-calculate locked to ensure we have real values
-    // locked is the total number of qtum tokens users locked to this address
-    let locked = get_locked(deps.as_ref(), &env.contract.address)?;
 
     // calculate how many native tokens this is worth and update supply
     let unlock = amount.checked_sub(tax).map_err(StdError::overflow)?;
@@ -256,15 +254,27 @@ pub fn unlock(
     // TODO: this is just a safety assertion - do we keep it, or remove caching?
     // in the end supply is just there to cache the (expected) results of get_bonded() so we don't
     // have expensive queries everywhere
-    assert_locks(&supply, locked)?;
+    if amount == user_staking_info.amount {
+        USER_STAKING.remove(deps.storage, &idx)?;
+    } else {
+        USER_STAKING.update(deps.storage, &idx, |old| match old {
+            Some(_) => Ok(UserStakingInfo{
+                amount: user_staking_info.amount.checked_sub(amount).map_err(StdError::overflow)?,
+                ..user_staking_info
+            }),
+            None => Err(ContractError::Unauthorized {  })
+        })?;
+    }
 
-    supply.locked = locked.checked_sub(unlock).map_err(StdError::overflow)?;
+    supply.locked = supply.locked.checked_sub(unlock).map_err(StdError::overflow)?;
     supply.issued = supply
         .issued
         .checked_sub(amount)
         .map_err(StdError::overflow)?;
     supply.fees += tax;
     TOTAL_SUPPLY.save(deps.storage, &supply)?;
+
+
 
     // unbond them
     let res = Response::new()
@@ -280,14 +290,27 @@ pub fn unlock(
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
        
-        QueryMsg::Investment {} => to_binary(&query_investment(deps)?),
+        QueryMsg::Investment {} => to_json_binary(&query_investment(deps)?),
         // inherited from cw20-base
-        QueryMsg::TokenInfo {} => to_binary(&query_token_info(deps)?),
-        QueryMsg::Balance { address } => to_binary(&query_balance(deps, address)?),
+        QueryMsg::TokenInfo {} => to_json_binary(&query_token_info(deps)?),
+        QueryMsg::Balance { address } => to_json_binary(&query_balance(deps, address)?),
         QueryMsg::Allowance { owner, spender } => {
-            to_binary(&query_allowance(deps, owner, spender)?)
-        }
+            to_json_binary(&query_allowance(deps, owner, spender)?)
+        },
+        QueryMsg::StakingInfo { owner } => to_json_binary(&query_user_staking(deps, owner)?)
     }
+}
+
+pub fn query_user_staking(deps: Deps, owner: String) -> StdResult<UserStakingInfoResponse> {
+    let user_stakings =  USER_STAKING
+    .idx
+    .owner
+    .prefix(Addr::unchecked(owner))
+    .range(deps.storage, None, None, Order::Ascending)
+    .map(|result| result.unwrap().1)
+    .collect::<Vec<UserStakingInfo>>();
+
+    Ok(UserStakingInfoResponse {infos: user_stakings} )
 }
 
 pub fn query_investment(deps: Deps) -> StdResult<InvestmentResponse> {
@@ -404,17 +427,49 @@ mod tests {
         let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
             sender: "addr0000".to_string(),
             amount: Uint128::from(100u128),
-            msg: to_binary(&Cw20HookMsg::Lock {lock_type:LockType::Long {}}).unwrap(),
+            msg: to_json_binary(&Cw20HookMsg::Lock {lock_type:LockType::Long {}, idx: "1".to_string()}).unwrap(),
         });
 
         let info = mock_info("qtum", &[]);
         let env = mock_env();
+        let _res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();       
+
+        let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
+            sender: "addr0000".to_string(),
+            amount: Uint128::from(100u128),
+            msg: to_json_binary(&Cw20HookMsg::Lock {lock_type:LockType::Short  {}, idx:"2".to_string()}).unwrap(),
+        });
+        let _res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+        let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
+            sender: "addr1111".to_string(),
+            amount: Uint128::from(100u128),
+            msg: to_json_binary(&Cw20HookMsg::Lock {lock_type:LockType::Short  {}, idx:"3".to_string()}).unwrap(),
+        });
         let _res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
 
 
         let supply_info = TOTAL_SUPPLY.load(deps.as_ref().storage).unwrap();
 
-        assert_eq!(supply_info.issued, Uint128::new(98) )
+        assert_eq!(supply_info.issued, Uint128::new(292) );
+
+        let user_staking = query_user_staking(deps.as_ref(), "addr0000".to_string()).unwrap();
+       
+        assert_eq!(user_staking.infos.len(), 2);
+
+        let info = mock_info("addr0000", &[]);
+
+        let msg = ExecuteMsg::UnLock { 
+            idx:  "1".to_string(), 
+            amount: Uint128::from(100u128),
+        };
+
+        let _res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+        let user_staking = query_user_staking(deps.as_ref(), "addr0000".to_string()).unwrap();
+        let supply_info = TOTAL_SUPPLY.load(deps.as_ref().storage).unwrap();
+        // println!("user_staking {}", user_staking.infos[0].amount);
+        assert_eq!(supply_info.issued, Uint128::new(192) );
+        assert_eq!(user_staking.infos.len(), 1);
 
     }
 

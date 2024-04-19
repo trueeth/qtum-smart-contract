@@ -4,7 +4,7 @@ use cosmwasm_std::{Binary, Coin, Decimal, Uint128};
 use cw20::{Cw20ReceiveMsg, Expiration};
 use cw20::{AllowanceResponse, BalanceResponse, TokenInfoResponse};
 pub use cw_controllers::ClaimsResponse;
-use crate::state::{LockPrd, LockTax};
+use crate::state::{LockPrd, LockTax, UserStakingInfo};
 
 
 #[cw_serde] 
@@ -41,10 +41,8 @@ pub struct InstantiateMsg {
 pub enum ExecuteMsg {
 
     Receive(Cw20ReceiveMsg),
-    /// Unbond will "burn" the given amount of derivative tokens and send the unbonded
-    /// staking tokens to the message sender (after exit tax is deducted)
-    UnLock { amount: Uint128 },
-
+  
+    UnLock {idx: String, amount: Uint128},
     /// Implements CW20. Transfer is a base message to move tokens to another account without triggering actions
     Transfer { recipient: String, amount: Uint128 },
     /// Implements CW20. Burn is a base message to destroy tokens forever
@@ -109,6 +107,11 @@ pub enum QueryMsg {
     /// Returns how much spender can use from owner account, 0 if unset.
     #[returns(AllowanceResponse)]
     Allowance { owner: String, spender: String },
+
+    #[returns(UserStakingInfoResponse)]
+    StakingInfo { owner: String },
+
+
 }
 
 #[cw_serde]
@@ -129,6 +132,11 @@ pub struct InvestmentResponse {
 
 }
 
+#[cw_serde]
+pub struct UserStakingInfoResponse {
+    pub infos : Vec<UserStakingInfo>
+}
+
 
 #[cw_serde]
 pub enum LockType {
@@ -140,7 +148,9 @@ pub enum LockType {
 #[cw_serde]
 pub enum Cw20HookMsg {
     Lock {
+        idx: String,
         lock_type: LockType
     },
+   
 }
 
