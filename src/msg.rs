@@ -111,6 +111,9 @@ pub enum QueryMsg {
     #[returns(UserStakingInfoResponse)]
     StakingInfo { owner: String },
 
+    #[returns(SupplyResponse)]
+    Supply {}
+
 
 }
 
@@ -131,6 +134,18 @@ pub struct InvestmentResponse {
     pub period : LockPrd,
 
 }
+
+
+#[cw_serde]
+pub struct SupplyResponse {
+    pub issued: Uint128,
+    /// bonded is how many qtum tokens locked on this contract
+    pub locked: Uint128,
+    /// fees is how many qtum tokens collected tax and penalty
+    pub fees: Uint128,
+
+}
+
 
 #[cw_serde]
 pub struct UserStakingInfoResponse {

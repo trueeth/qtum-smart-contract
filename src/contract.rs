@@ -17,11 +17,11 @@ use cw20_base::contract::{
 use cw20_base::state::{MinterData, TokenInfo, TOKEN_INFO};
 
 use crate::error::ContractError;
-use crate::msg::{Cw20HookMsg, ExecuteMsg, InstantiateMsg, InvestmentResponse, LockType, QueryMsg, UserStakingInfoResponse};
+use crate::msg::{Cw20HookMsg, ExecuteMsg, InstantiateMsg, InvestmentResponse, LockType, QueryMsg, UserStakingInfoResponse, SupplyResponse};
 use crate::state::{  LockPrd, LockTax, StakingInfo, Supply, UserStakingInfo, STAKING_INFO, TOTAL_SUPPLY, USER_STAKING};
 
 
-const FALLBACK_RATIO: Decimal = Decimal::one();
+const FALLBACK_RATIO: Decimal = Decimal::one();  
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:xqtum";
@@ -282,7 +282,7 @@ pub fn unlock(
             contract_addr: stake_info.staking_token_address.to_string(),
             msg: to_json_binary(&Cw20ExecuteMsg::Transfer {
                 recipient: info.sender.to_string(),
-                amount,
+                amount: unlock,
             })?,
             funds: vec![],
         })])
@@ -305,8 +305,23 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::Allowance { owner, spender } => {
             to_json_binary(&query_allowance(deps, owner, spender)?)
         },
-        QueryMsg::StakingInfo { owner } => to_json_binary(&query_user_staking(deps, owner)?)
+        QueryMsg::StakingInfo { owner } => to_json_binary(&query_user_staking(deps, owner)?),
+        QueryMsg::Supply{} => to_json_binary(&query_supply(deps)?)
     }
+}
+
+
+pub fn query_supply(deps: Deps) -> StdResult<SupplyResponse> {
+
+    let supply = TOTAL_SUPPLY.load(deps.storage)?;
+
+    let res = SupplyResponse {
+        issued: supply.issued,
+        locked: supply.locked,
+        fees: supply.fees
+    };
+
+    Ok(res)
 }
 
 pub fn query_user_staking(deps: Deps, owner: String) -> StdResult<UserStakingInfoResponse> {
